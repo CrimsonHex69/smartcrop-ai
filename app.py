@@ -1,3 +1,4 @@
+import html
 import os
 from io import BytesIO
 from pathlib import Path
@@ -30,8 +31,11 @@ TEAM_MEMBERS = [
     ("Tanisha", "Research · Testing & Pitch"),
 ]
 
-DATA_URL = "https://raw.githubusercontent.com/the-amazing-atharva/Crop-Recommendation/main/Crop_recommendation.csv"
-DATA_FILE = Path("Crop_recommendation.csv")
+DATA_URLS = [
+    "https://raw.githubusercontent.com/the-amazing-atharva/Crop-Recommendation/main/Crop_recommendation.csv",
+    "https://raw.githubusercontent.com/Gladiator07/Harvestify/master/Data-processed/crop_recommendation.csv",
+]
+DATA_FILE = Path(__file__).resolve().parent / "Crop_recommendation.csv"
 FEATURES = ["N", "P", "K", "temperature", "humidity", "ph", "rainfall"]
 FEATURE_LABELS = {
     "N": "Nitrogen",
@@ -55,10 +59,10 @@ DEMO_VALUES = {
     "N": 90.0,
     "P": 42.0,
     "K": 43.0,
-    "temperature": 25.0,
-    "humidity": 80.0,
-    "ph": 6.5,
-    "rainfall": 200.0,
+    "temperature": 20.8797,
+    "humidity": 82.0027,
+    "ph": 6.5029,
+    "rainfall": 202.9355,
 }
 CROP_ICONS = {
     "rice": "🌾", "maize": "🌽", "cotton": "🌿", "coffee": "☕", "banana": "🍌",
@@ -108,25 +112,34 @@ CROP_LIBRARY = {
 }
 
 
-def download_dataset_if_needed():
-    if DATA_FILE.exists():
-        return
-    req = Request(DATA_URL, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(req, timeout=20) as response:
-        DATA_FILE.write_bytes(response.read())
+def download_dataset():
+    errors = []
+    for url in DATA_URLS:
+        for _ in range(2):
+            try:
+                req = Request(url, headers={"User-Agent": "SmartCropAI/1.0"})
+                with urlopen(req, timeout=20) as response:
+                    return pd.read_csv(BytesIO(response.read()))
+            except Exception as exc:
+                errors.append(f"{url}: {exc}")
+    raise RuntimeError("Unable to download the benchmark dataset. " + " | ".join(errors))
 
 
 @st.cache_data(show_spinner=False)
 def load_data():
-    if not DATA_FILE.exists():
-        download_dataset_if_needed()
-    df = pd.read_csv(DATA_FILE)
+    if DATA_FILE.exists():
+        df = pd.read_csv(DATA_FILE)
+    else:
+        df = download_dataset()
     df.columns = [c.strip() for c in df.columns]
     needed = FEATURES + ["label"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         raise ValueError(f"Dataset is missing columns: {missing}")
-    return df.dropna(subset=needed).copy()
+    df = df.dropna(subset=needed).copy()
+    if df.empty:
+        raise ValueError("The crop dataset contains no usable rows after cleaning.")
+    return df
 
 
 @st.cache_resource(show_spinner=False)
@@ -190,13 +203,18 @@ def grounded_explanation(crop, values, class_profiles, feature_importance):
     return (
         f"The model's top prediction is {clean_crop_name(crop)}. "
         f"Within the benchmark data, the entered profile is relatively close to this crop class on {', '.join(closest)}. "
-        f"The model also learned {', '.join(important)} as globally influential features. "
+        f"Across the fitted model, {', '.join(important)} were among the most influential input features. "
         "This is a benchmark-based decision-support result, not a guarantee of field performance."
     )
 
 
 def optional_ai_explanation(crop, values, top3):
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        try:
+            api_key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+        except Exception:
+            api_key = ""
     if not api_key or genai is None:
         return None
     try:
@@ -228,7 +246,8 @@ def build_report(crop, score, values, top6, accuracy):
     ]
     lines.extend(f"{FEATURE_LABELS[k]}: {values[k]:.1f}{FEATURE_UNITS[k]}" for k in FEATURES)
     lines += ["", "Top alternatives"]
-    lines.extend(f"{i+1}. {clean_crop_name(c)} — {s*100:.1f}%" for i, (c, s) in enumerate(top6[:5]))
+    alternatives = top6[1:6]
+    lines.extend(f"{i+1}. {clean_crop_name(c)} — {s*100:.1f}%" for i, (c, s) in enumerate(alternatives))
     lines += [
         "",
         "Disclaimer",
@@ -264,7 +283,11 @@ st.markdown(
     .reco{background:linear-gradient(135deg,#0e2618,#10221c 55%,#112229);border:1px solid #2e674b;border-radius:22px;padding:1.4rem;box-shadow:0 18px 45px rgba(0,0,0,.22)}.reco .lab{font-size:.76rem;letter-spacing:.1em;text-transform:uppercase;color:var(--green2);font-weight:850}.reco .crop{font-size:clamp(2rem,4vw,3.2rem);font-weight:900;letter-spacing:-.04em;color:#f5fff6;margin:.2rem 0}.reco .score{color:#b5c9bd}.reco .score strong{color:var(--green2)}
     .why{background:#0b1210;border:1px solid var(--line);border-radius:17px;padding:1rem 1.05rem;color:#cbd8d1;line-height:1.55}.why b{color:var(--text)}
     .smallcard{background:#0b1410;border:1px solid var(--line);border-radius:15px;padding:.8rem}.smallcard .k{font-size:.74rem;color:var(--muted)}.smallcard .v{font-size:1.02rem;font-weight:800;margin-top:.2rem;color:var(--text)}
-    .compare{background:#0b1410;border:1px solid var(--line);border-radius:16px;padding:.85rem 1rem;margin-bottom:.5rem}.compare .title{font-weight:800;color:var(--text)}
+    .rec-row{display:flex;align-items:center;gap:.85rem;background:#0b1410;border:1px solid var(--line);border-radius:16px;padding:.85rem 1rem;margin-bottom:.65rem}
+    .rec-rank{width:28px;height:28px;display:grid;place-items:center;border-radius:9px;background:#13271b;color:var(--green2);font-weight:850;font-size:.8rem;flex:0 0 auto}
+    .rec-main{min-width:0;flex:1}.rec-line{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:.5rem}
+    .rec-name{font-weight:800;color:var(--text)}.rec-score{font-weight:850;color:var(--green2);white-space:nowrap}
+    .rec-track{height:8px;border-radius:999px;background:#17251f;overflow:hidden}.rec-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#5dd37e,#83e9df)}
     .scenario{background:linear-gradient(180deg,#0e1913,#0b1210);border:1px solid #2c4d39;border-radius:18px;padding:1rem}
     .warn{background:#211a0c;border:1px solid #5e4d25;color:#f1d88e;border-radius:13px;padding:.8rem 1rem;font-size:.84rem}.good{background:#0b1f14;border:1px solid #265b3e;color:#aeeec0;border-radius:13px;padding:.8rem 1rem;font-size:.84rem}
     .library-card{background:#0b1410;border:1px solid var(--line);border-radius:16px;padding:1rem;height:100%}.library-card .name{font-size:1.02rem;font-weight:850;color:var(--text)}.library-card .meta{font-size:.72rem;color:var(--green2);margin:.18rem 0 .45rem;text-transform:uppercase;letter-spacing:.08em}.library-card .desc{font-size:.82rem;color:var(--muted);line-height:1.45}
@@ -354,35 +377,50 @@ if result:
 
     st.markdown('<div class="section"><h2>2 · Smart recommendation</h2><span>Model-backed result</span></div>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="reco"><div class="lab">Recommended crop</div><div class="crop">{crop_icon(crop)} {clean_crop_name(crop)}</div><div class="score">Model score: <strong>{score*100:.1f}%</strong> · benchmark model output</div></div>',
+        f'<div class="reco"><div class="lab">Recommended crop</div><div class="crop">{crop_icon(crop)} {clean_crop_name(crop)}</div><div class="score">Model score: <strong>{score*100:.1f}%</strong> · benchmark model score</div></div>',
         unsafe_allow_html=True,
     )
 
     left, right = st.columns([1.1, 1])
     with left:
-        st.markdown('<div class="section"><h2>Top recommendations</h2><span>Six highest model scores</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section"><h2>Top recommendations</h2><span>Six highest model scores · not probability</span></div>', unsafe_allow_html=True)
         for idx, (name, sc) in enumerate(top6, start=1):
-            st.markdown('<div class="compare">', unsafe_allow_html=True)
-            cc1, cc2, cc3 = st.columns([.11, .57, .24])
-            with cc1:
-                st.markdown(f"**{idx}**")
-            with cc2:
-                st.markdown(f"<div class='title'>{crop_icon(name)} {clean_crop_name(name)}</div>", unsafe_allow_html=True)
-                st.progress(min(max(sc, 0.0), 1.0))
-            with cc3:
-                st.markdown(f"**{sc*100:.1f}%**")
-            st.markdown('</div>', unsafe_allow_html=True)
+            pct = max(0.0, min(100.0, sc * 100.0))
+            st.markdown(
+                f'''
+                <div class="rec-row">
+                    <div class="rec-rank">{idx}</div>
+                    <div class="rec-main">
+                        <div class="rec-line">
+                            <span class="rec-name">{crop_icon(name)} {clean_crop_name(name)}</span>
+                            <span class="rec-score">{pct:.1f}%</span>
+                        </div>
+                        <div class="rec-track"><div class="rec-fill" style="width:{pct:.1f}%"></div></div>
+                    </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
 
     with right:
         st.markdown('<div class="section"><h2>Why this crop?</h2><span>Explainable context</span></div>', unsafe_allow_html=True)
-        ai_text = optional_ai_explanation(crop, values, top6)
-        text = ai_text if ai_text else grounded_explanation(crop, values, class_profiles, feature_importance)
-        st.markdown(f'<div class="why"><b>{crop_icon(crop)} Why {clean_crop_name(crop)}?</b><br><br>{text.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-        all_in_range = all(ranges[k][0] <= values[k] <= ranges[k][1] for k in FEATURES)
-        if all_in_range:
-            st.markdown('<div class="good" style="margin-top:.75rem">✓ All seven inputs are within the benchmark dataset range.</div>', unsafe_allow_html=True)
+        if "ai_explanation" not in result:
+            result["ai_explanation"] = optional_ai_explanation(crop, values, top6) or ""
+            st.session_state.last_result = result
+        text = result["ai_explanation"] or grounded_explanation(crop, values, class_profiles, feature_importance)
+        safe_text = html.escape(text).replace("\n", "<br>")
+        st.markdown(f'<div class="why"><b>{crop_icon(crop)} Why {clean_crop_name(crop)}?</b><br><br>{safe_text}</div>', unsafe_allow_html=True)
+        edge_flags = []
+        for key in FEATURES:
+            lo, hi = ranges[key]
+            pos = relative_position(values[key], lo, hi)
+            if pos <= 10 or pos >= 90:
+                edge_flags.append(FEATURE_LABELS[key])
+        if edge_flags:
+            verb = "is" if len(edge_flags) == 1 else "are"
+            st.markdown(f'<div class="warn" style="margin-top:.75rem">⚠ {", ".join(edge_flags)} {verb} near a benchmark boundary; interpret the model output cautiously.</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="warn" style="margin-top:.75rem">⚠ One or more inputs are outside the benchmark range. Treat the model output cautiously.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="good" style="margin-top:.75rem">✓ All inputs sit comfortably inside the benchmark ranges used by the model.</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section"><h2>3 · Field snapshot</h2><span>Exactly what the model received</span></div>', unsafe_allow_html=True)
     cols = st.columns(7)
@@ -390,7 +428,7 @@ if result:
         with cols[i]:
             st.markdown(f'<div class="smallcard"><div class="k">{FEATURE_LABELS[key]}</div><div class="v">{values[key]:.1f}{FEATURE_UNITS[key]}</div></div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section"><h2>4 · Compare the leading crops</h2><span>Side-by-side benchmark context</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section"><h2>4 · Compare the leading crops</h2><span>Side-by-side benchmark context · model outputs</span></div>', unsafe_allow_html=True)
     compare_rows = []
     for name, sc in top6[:3]:
         profile = class_profiles.loc[name]
@@ -487,12 +525,13 @@ with st.sidebar:
     for name, role in TEAM_MEMBERS:
         st.write(f"**{name}** — {role}")
     st.markdown("**Optional AI layer**")
-    st.write("Gemini explanation only when an API key is configured.")
+    st.write("Optional Gemini explanation; the core ML recommendation works without an API key.")
 
 with st.expander("Model information"):
+    st.write("Benchmark dataset: Crop Recommendation benchmark (soil + climate features).")
     st.write(f"Training rows: {len(df):,}")
     st.write(f"Crop classes: {df['label'].nunique()}")
     imp_df = pd.DataFrame({"Feature": [FEATURE_LABELS[k] for k in feature_importance.index], "Importance": feature_importance.values})
     st.dataframe(imp_df, hide_index=True, use_container_width=True)
 
-st.markdown('<div class="footer">SmartCrop AI · Team Alpha Z · IDEAFORGE 2.0 · Benchmark-based decision support prototype</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">SmartCrop AI · Team Alpha Z · IDEAFORGE 2.0 · Benchmark-based decision support prototype · Use measured soil values for real-world testing.</div>', unsafe_allow_html=True)
